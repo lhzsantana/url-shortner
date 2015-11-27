@@ -13,12 +13,15 @@ import spray.json._
 import spray.httpx.SprayJsonSupport
 import spray.json.DefaultJsonProtocol
 import spray.httpx.unmarshalling.Unmarshaller
+import com.chaordic.cassandra.ShortenedUrl
 
 case class OriginalUrl(longUrl: String)
+case class NewUrl(longUrl: String, id: String, shortUrl: String)
 
 object OriginalUrlJsonSupport extends DefaultJsonProtocol with SprayJsonSupport {
-  println("inside the path 3")
   implicit val OriginalUrlFormats = jsonFormat1(OriginalUrl)
+  implicit val NewUrlFormats = jsonFormat3(NewUrl)
+  implicit val ShortenedUrlFormats = jsonFormat4(ShortenedUrl)
 }
 
 object Stater extends App with SimpleRoutingApp {
@@ -30,6 +33,7 @@ object Stater extends App with SimpleRoutingApp {
   import OriginalUrlJsonSupport._
 
   startServer("0.0.0.0", 8081) {
+    client.connect("localhost")
     post {
       entity(as[OriginalUrl]) { url =>
         createShortUrl(url)
@@ -47,29 +51,34 @@ object Stater extends App with SimpleRoutingApp {
 
   def createShortUrl(path: OriginalUrl) = (ctx: RequestContext) => {
 
-    var random = ""
+    var resp = "";
+
     Task {
 
       val validator = new UrlValidator(List("http", "https").toArray)
       if (validator.isValid(path.longUrl)) {
 
-        do{
-          random = Random.alphanumeric.take(7).mkString
-          random
-        }while(!client.exists(random))
+        var original = client.getOriginal(path.longUrl)
 
-        //client.add(random, URLConstant + random, path.longUrl)
+        if (original == null) {
 
+          var random = ""
+          do {
+            random = Random.alphanumeric.take(7).mkString
+          } while (client.existsId(random))
+
+          client.add(random, URLConstant + random, path.longUrl)
+          
+          resp = (new NewUrl(path.longUrl, random, URLConstant + random)).toJson.toString()
+        }else{
+          resp = original.toJson.toString()
+        }
       } else {
         throw new Exception("The supplied url is invalid.")
       }
     }.runAsync(_.fold(l => ctx.reject(
       ValidationRejection("Invalid url provided", Some(l))),
-      r => ctx.complete(s"" + URLConstant + "/" + random)))
-  }
-
-  def retrieveOriginalUrl(path: String): String = {
-    client.getUrl(path)
+      r => ctx.complete(resp)))
   }
 
   def retrieveUrl(id: String) = (ctx: RequestContext) => {
@@ -77,8 +86,8 @@ object Stater extends App with SimpleRoutingApp {
     var resp = ""
 
     Task {
-      
-      //resp = client.getUrl(id)
+
+      resp = client.getUrl(id).toJson.toString()
 
       printf(resp)
 
